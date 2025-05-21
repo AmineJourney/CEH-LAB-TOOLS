@@ -27,30 +27,56 @@ done
 echo "[*] Discovering live hosts in $TARGET_SUBNET..."
 nmap -sn -Pn "$TARGET_SUBNET" -n --data-length 50 -T3 -oG "$OUTDIR/01_ping_sweep.gnmap"
 grep Up "$OUTDIR/01_ping_sweep.gnmap" | awk '{print $2}' > "$LIVE_HOSTS_FILE"
-echo "[*] Found $(wc -l < "$LIVE_HOSTS_FILE") live hosts."
+
+LIVE_COUNT=$(wc -l < "$LIVE_HOSTS_FILE")
+echo "[*] Found $LIVE_COUNT live hosts."
+
+if [[ "$LIVE_COUNT" -eq 0 ]]; then
+    echo "[!] No live hosts found. Exiting."
+    exit 0
+fi
 
 # ========== STEP 2: PARALLEL PORT SCANNING ==========
 scan_ports() {
     local ip="$1"
-    echo "[*] Scanning all TCP ports on $ip..."
-    nmap -sT -Pn -n -T3 -p- --open --max-retries 2 "$ip" -oN "$OUTDIR/02_ports_$ip.txt"
-    grep '^[0-9]' "$OUTDIR/02_ports_$ip.txt" | cut -d '/' -f1 | tr '\n' ',' | sed 's/,$/\n/' | awk -v ip="$ip" '{print ip":"$0}' >> "$OPEN_PORTS_FILE"
+    echo "[*] Scanning top 1000 TCP ports on $ip..."
+    local outfile="$OUTDIR/02_ports_$ip.txt"
+    
+    nmap -sT -Pn -n -T3 --open --max-retries 2 "$ip" -oN "$outfile" || {
+        echo "[!] Scan failed for $ip" >&2
+        return
+    }
+
+    if grep -q '^[0-9]' "$outfile"; then
+        grep '^[0-9]' "$outfile" | cut -d '/' -f1 | tr '\n' ',' | sed 's/,$/\n/' | awk -v ip="$ip" '{print ip":"$0}' >> "$OPEN_PORTS_FILE"
+    else
+        echo "[*] No open ports found on $ip"
+    fi
 }
 export -f scan_ports
 
-parallel -j 5 scan_ports :::: "$LIVE_HOSTS_FILE"
+echo "[*] Running parallel port scans (top 1000 ports)..."
+parallel -j 2 scan_ports :::: "$LIVE_HOSTS_FILE"
+
+# ========== SAFEGUARD: Check for port scan results ==========
+if [[ ! -s "$OPEN_PORTS_FILE" ]]; then
+    echo "[!] No open ports detected on any host. Exiting."
+    exit 0
+fi
 
 # ========== STEP 3: OS DETECTION AND TTL ==========
 os_detect_and_ttl() {
     local ip="$1"
-    echo "[*] Detecting OS and TTL for $ip..."
-    nmap -O -Pn -n -T3 "$ip" -oN "$OUTDIR/03_os_$ip.txt"
+    echo "[*] Detecting OS for $ip..."
+    local os_file="$OUTDIR/03_os_$ip.txt"
+
+    nmap -O -Pn -n -T3 "$ip" -oN "$os_file"
 
     local ttl=128
-    if grep -qi 'linux' "$OUTDIR/03_os_$ip.txt"; then ttl=64;
-    elif grep -qi 'windows' "$OUTDIR/03_os_$ip.txt"; then ttl=128;
-    elif grep -qi 'cisco\|router' "$OUTDIR/03_os_$ip.txt"; then ttl=255;
-    elif grep -qi 'mac os' "$OUTDIR/03_os_$ip.txt"; then ttl=64;
+    if grep -qi 'linux' "$os_file"; then ttl=64;
+    elif grep -qi 'windows' "$os_file"; then ttl=128;
+    elif grep -qi 'cisco\|router' "$os_file"; then ttl=255;
+    elif grep -qi 'mac os' "$os_file"; then ttl=64;
     fi
 
     ports=$(grep "$ip" "$OPEN_PORTS_FILE" | cut -d ':' -f2)
@@ -58,7 +84,7 @@ os_detect_and_ttl() {
 }
 export -f os_detect_and_ttl
 
-cut -d ':' -f1 "$OPEN_PORTS_FILE" | parallel -j 5 os_detect_and_ttl
+cut -d ':' -f1 "$OPEN_PORTS_FILE" | parallel -j 2 os_detect_and_ttl
 
 # ========== STEP 4: DEEP SCAN ==========
 deep_scan() {
@@ -73,7 +99,7 @@ export -f deep_scan
 
 cat "$TTL_FILE" | while IFS=':' read -r ip ports ttl; do
     echo "$ip:$ports:$ttl"
-done | parallel -j 5 --colsep ':' deep_scan {1} {2} {3}
+done | parallel -j 2 --colsep ':' deep_scan {1} {2} {3}
 
 # ========== DONE ==========
 echo "[*] Lab scan complete. Results saved in: $OUTDIR"
