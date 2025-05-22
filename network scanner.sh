@@ -1,105 +1,119 @@
 #!/bin/bash
 
-# ========== CONFIGURATION ==========
-TARGET_SUBNET="$1"
-if [[ -z "$TARGET_SUBNET" ]]; then
-    echo "Usage: $0 <target_subnet>"
-    exit 1
+# ==============================
+# Full Nmap Multi-Technique Scanner
+# Plus JSON summary with versions and CVE matching
+# ==============================
+
+TARGET="$1"
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+OUTPUT_DIR="nmap_scan_$TARGET_$TIMESTAMP"
+mkdir -p "$OUTPUT_DIR"
+
+if [ -z "$TARGET" ]; then
+  echo "Usage: $0 <target IP/domain>"
+  exit 1
 fi
 
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTDIR="lab_fullscan_$TIMESTAMP"
-mkdir -p "$OUTDIR"
+# Shared options
+COMMON_OPTS="-Pn -n -T3 -v"
 
-LIVE_HOSTS_FILE="$OUTDIR/live_hosts.txt"
-OPEN_PORTS_FILE="$OUTDIR/open_ports.txt"
-TTL_FILE="$OUTDIR/ttl_by_host.txt"
-DEEP_SCAN_LOG="$OUTDIR/deep_scan_log.txt"
+# Step 1: TCP Connect / Full Open
+nmap -sT $COMMON_OPTS -oA "$OUTPUT_DIR/tcp_connect" "$TARGET"
 
-set -euo pipefail
+# Step 2: Stealth (Half-Open) Scan
+nmap -sS $COMMON_OPTS -oA "$OUTPUT_DIR/stealth_halfopen" "$TARGET"
 
-# ========== TOOL CHECKS ==========
-for cmd in nmap parallel; do
-    command -v "$cmd" >/dev/null || { echo "[!] Required command '$cmd' not found."; exit 1; }
-done
+# Step 3: UDP Scan
+nmap -sU $COMMON_OPTS -oA "$OUTPUT_DIR/udp" "$TARGET"
 
-# ========== STEP 1: HOST DISCOVERY ==========
-echo "[*] Discovering live hosts in $TARGET_SUBNET..."
-nmap -sn -Pn "$TARGET_SUBNET" -n --data-length 50 -T3 -oG "$OUTDIR/01_ping_sweep.gnmap"
-grep Up "$OUTDIR/01_ping_sweep.gnmap" | awk '{print $2}' > "$LIVE_HOSTS_FILE"
+# Step 4: SCTP INIT Scan
+nmap -sY $COMMON_OPTS -oA "$OUTPUT_DIR/sctp_init" "$TARGET"
 
-LIVE_COUNT=$(wc -l < "$LIVE_HOSTS_FILE")
-echo "[*] Found $LIVE_COUNT live hosts."
+# Step 5: SCTP COOKIE-ECHO Scan
+nmap -sZ $COMMON_OPTS -oA "$OUTPUT_DIR/sctp_cookie" "$TARGET"
 
-if [[ "$LIVE_COUNT" -eq 0 ]]; then
-    echo "[!] No live hosts found. Exiting."
-    exit 0
-fi
+# Step 6: Xmas Scan
+nmap -sX $COMMON_OPTS -oA "$OUTPUT_DIR/xmas" "$TARGET"
 
-# ========== STEP 2: PARALLEL PORT SCANNING ==========
-scan_ports() {
-    local ip="$1"
-    echo "[*] Scanning top 1000 TCP ports on $ip..."
-    local outfile="$OUTDIR/02_ports_$ip.txt"
-    
-    nmap -sT -Pn -n -T3 --open --max-retries 2 "$ip" -oN "$outfile" || {
-        echo "[!] Scan failed for $ip" >&2
-        return
-    }
+# Step 7: FIN Scan
+nmap -sF $COMMON_OPTS -oA "$OUTPUT_DIR/fin" "$TARGET"
 
-    if grep -q '^[0-9]' "$outfile"; then
-        grep '^[0-9]' "$outfile" | cut -d '/' -f1 | tr '\n' ',' | sed 's/,$/\n/' | awk -v ip="$ip" '{print ip":"$0}' >> "$OPEN_PORTS_FILE"
-    else
-        echo "[*] No open ports found on $ip"
-    fi
-}
-export -f scan_ports
+# Step 8: NULL Scan
+nmap -sN $COMMON_OPTS -oA "$OUTPUT_DIR/null" "$TARGET"
 
-echo "[*] Running parallel port scans (top 1000 ports)..."
-parallel -j 2 scan_ports :::: "$LIVE_HOSTS_FILE"
+# Step 9: Maimon Scan
+nmap -sM $COMMON_OPTS -oA "$OUTPUT_DIR/maimon" "$TARGET"
 
-# ========== SAFEGUARD: Check for port scan results ==========
-if [[ ! -s "$OPEN_PORTS_FILE" ]]; then
-    echo "[!] No open ports detected on any host. Exiting."
-    exit 0
-fi
+# Step 10: Inverse TCP Flag Scans
+nmap -sF -sN -sX $COMMON_OPTS -oA "$OUTPUT_DIR/inverse_flags" "$TARGET"
 
-# ========== STEP 3: OS DETECTION AND TTL ==========
-os_detect_and_ttl() {
-    local ip="$1"
-    echo "[*] Detecting OS for $ip..."
-    local os_file="$OUTDIR/03_os_$ip.txt"
+# Step 11: ACK Flag Probe
+nmap -sA $COMMON_OPTS -oA "$OUTPUT_DIR/ack_probe" "$TARGET"
 
-    nmap -O -Pn -n -T3 "$ip" -oN "$os_file"
+# Step 12: TTL-based Scan
+nmap -sA --ttl 100 $COMMON_OPTS -oA "$OUTPUT_DIR/ttl_scan" "$TARGET"
 
-    local ttl=128
-    if grep -qi 'linux' "$os_file"; then ttl=64;
-    elif grep -qi 'windows' "$os_file"; then ttl=128;
-    elif grep -qi 'cisco\|router' "$os_file"; then ttl=255;
-    elif grep -qi 'mac os' "$os_file"; then ttl=64;
-    fi
+# Step 13: Window Scan
+nmap -sA -sW $COMMON_OPTS -oA "$OUTPUT_DIR/window_scan" "$TARGET"
 
-    ports=$(grep "$ip" "$OPEN_PORTS_FILE" | cut -d ':' -f2)
-    echo "$ip:$ports:$ttl" >> "$TTL_FILE"
-}
-export -f os_detect_and_ttl
+# Step 14: Version Detection + CVE Extraction
+nmap -sV --script vulners $COMMON_OPTS -oX "$OUTPUT_DIR/version_cves.xml" "$TARGET"
 
-cut -d ':' -f1 "$OPEN_PORTS_FILE" | parallel -j 2 os_detect_and_ttl
+# Optional: IDLE/IPID Scan (requires zombie IP)
+# ZOMBIE="<zombie_ip>"
+# nmap -Pn -p- -sI "$ZOMBIE" $COMMON_OPTS -oA "$OUTPUT_DIR/idle_ipid" "$TARGET"
 
-# ========== STEP 4: DEEP SCAN ==========
-deep_scan() {
-    local ip="$1"
-    local ports="$2"
-    local ttl="$3"
-    echo "[*] Running deep scan on $ip with TTL $ttl and ports $ports..."
-    nmap -sT -Pn -n -T4 --ttl "$ttl" -sV -A --script=default,vuln -p "$ports" "$ip" -oN "$OUTDIR/04_deep_$ip.txt"
-    echo "$ip scanned with TTL $ttl on ports $ports" >> "$DEEP_SCAN_LOG"
-}
-export -f deep_scan
+# Step 15: Generate JSON Summary
+SUMMARY_FILE="$OUTPUT_DIR/summary.json"
+python3 - <<EOF
+import xml.etree.ElementTree as ET
+import json
 
-cat "$TTL_FILE" | while IFS=':' read -r ip ports ttl; do
-    echo "$ip:$ports:$ttl"
-done | parallel -j 2 --colsep ':' deep_scan {1} {2} {3}
+xml_path = "$OUTPUT_DIR/version_cves.xml"
+tree = ET.parse(xml_path)
+root = tree.getroot()
+summaries = []
 
-# ========== DONE ==========
-echo "[*] Lab scan complete. Results saved in: $OUTDIR"
+for host in root.findall("host"):
+    address = host.find("address").get("addr")
+    ports = host.find("ports")
+    if ports is None:
+        continue
+    for port in ports.findall("port"):
+        portid = port.get("portid")
+        protocol = port.get("protocol")
+        service_elem = port.find("service")
+        cpe = service_elem.get("cpe") if service_elem is not None else None
+        name = service_elem.get("name") if service_elem is not None else None
+        product = service_elem.get("product") if service_elem is not None else None
+        version = service_elem.get("version") if service_elem is not None else None
+
+        cves = []
+        for script in port.findall("script"):
+            if script.get("id") == "vulners":
+                output = script.get("output")
+                for line in output.split("\n"):
+                    if "CVE-" in line:
+                        cves.append(line.strip())
+
+        summaries.append({
+            "host": address,
+            "port": portid,
+            "protocol": protocol,
+            "service": name,
+            "product": product,
+            "version": version,
+            "cpe": cpe,
+            "cves": cves
+        })
+
+with open("$SUMMARY_FILE", "w") as f:
+    json.dump(summaries, f, indent=2)
+EOF
+
+# Final message
+echo -e "\n=============================="
+echo "Scan complete. Results saved in: $OUTPUT_DIR"
+echo "Key findings summarized in: $SUMMARY_FILE"
+echo "=============================="
