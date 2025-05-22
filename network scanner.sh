@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ====================================
-# Pure Bash Nmap Scanner with Full Recon, UDP, SCTP, and CVE Extraction (No Python)
+# Pure Bash Nmap Scanner with Full Recon, UDP, SCTP, SMB, and CVE Extraction (No Python)
 # ====================================
 
 TARGET="$1"
@@ -15,66 +15,71 @@ if [ -z "$TARGET" ]; then
 fi
 
 COMMON_OPTS="-n -T3 -v"
-LIVE_HOSTS_FILE="$OUTPUT_DIR/live_hosts.txt"
+LIVE_HOSTS_FILE="$OUTPUT_DIR/hosts.txt"
 OPEN_PORTS_FILE="$OUTPUT_DIR/open_ports.txt"
 
 # Step 1: Host Discovery (ICMP, ARP, IP Proto, TCP/UDP/Other)
 echo "[+] Performing host discovery (ICMP, TCP, ARP, IP Protocol)..."
-nmap -sn -PE -PP -PM -PS22,80,443 -PA22,80,443 -PO1,6,17 $COMMON_OPTS -oX "$OUTPUT_DIR/ping_scan.xml" "$TARGET"
-nmap -sn -PR $COMMON_OPTS -oX "$OUTPUT_DIR/arp_scan.xml" "$TARGET"
-nmap -sO -Pn $COMMON_OPTS -oX "$OUTPUT_DIR/ipproto_scan.xml" "$TARGET"
+nmap -sn -PE -PP -PM -PS22,80,443 -PA22,80,443 -PO1,6,17 $COMMON_OPTS -oN "$OUTPUT_DIR/scan1.txt" "$TARGET"
+nmap -sn -PR $COMMON_OPTS -oN "$OUTPUT_DIR/scan1_arp.txt" "$TARGET"
+nmap -sO -Pn $COMMON_OPTS -oN "$OUTPUT_DIR/scan1_ipproto.txt" "$TARGET"
 
 # Merge live hosts from all scans
 echo "[+] Extracting live hosts..."
-grep -h 'addrtype="ipv4"' "$OUTPUT_DIR"/*.xml | \
-  sed -n 's/.*addr="\([0-9.]*\)".*addrtype="ipv4".*/\1/p' | sort -u > "$LIVE_HOSTS_FILE"
+grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' "$OUTPUT_DIR/scan1.txt" "$OUTPUT_DIR/scan1_arp.txt" "$OUTPUT_DIR/scan1_ipproto.txt" | sort -u > "$LIVE_HOSTS_FILE"
 
 # Step 2: Fast Port Scan (TCP)
 echo "[+] Scanning live hosts for open TCP ports..."
-nmap -sS -F -Pn $COMMON_OPTS -iL "$LIVE_HOSTS_FILE" -oX "$OUTPUT_DIR/fast_tcp_scan.xml"
+nmap -sS -F -Pn $COMMON_OPTS -iL "$LIVE_HOSTS_FILE" -oN "$OUTPUT_DIR/scan2.txt"
 
 # Extract open TCP ports
 echo "[+] Extracting open ports..."
-grep 'portid' "$OUTPUT_DIR/fast_tcp_scan.xml" | grep open | \
-  sed -n 's/.*portid="\([0-9]*\)".*/\1/p' | sort -u | paste -sd, - > "$OPEN_PORTS_FILE"
+grep -Eo '([0-9]{1,5})/tcp\s+open' "$OUTPUT_DIR/scan2.txt" | cut -d/ -f1 | sort -u | paste -sd, - > "$OPEN_PORTS_FILE"
 
 OPEN_PORTS=$(cat "$OPEN_PORTS_FILE")
 
-# Step 3: Full TCP/UDP/SCTP Scan + DNS + OS + CVEs
+# Step 3: Full TCP/UDP/SCTP Scan + DNS + OS + SMB + CVEs
 if [ -n "$OPEN_PORTS" ]; then
-  echo "[+] Running detailed scans (TCP/UDP/SCTP), OS, DNS, traceroute, and CVEs..."
+  echo "[+] Running detailed scans (TCP/UDP/SCTP), OS, DNS, SMB, traceroute, and CVEs..."
   nmap -sS -sU -sY -sV -sC -A -O \
-       --script vulners,dns-brute,dns-service-discovery --traceroute \
-       -Pn $COMMON_OPTS -p "$OPEN_PORTS" -iL "$LIVE_HOSTS_FILE" -oX "$OUTPUT_DIR/full_scan.xml"
+       --script vulners,dns-brute,dns-service-discovery,smb-os-discovery,smb-enum-shares,smb-enum-users \
+       --traceroute \
+       -Pn $COMMON_OPTS -p "$OPEN_PORTS" -iL "$LIVE_HOSTS_FILE" \
+       -oX "$OUTPUT_DIR/full_scan.xml" -oN "$OUTPUT_DIR/full_scan.txt"
 else
   echo "[-] No open TCP ports found. Skipping detailed scan."
 fi
 
 # Step 4: Extract CVE Summary with host and port context
-SUMMARY_FILE="$OUTPUT_DIR/cve_summary.txt"
-VULN_FILE="$OUTPUT_DIR/host_vulnerabilities.txt"
+VULN_XML="$OUTPUT_DIR/cve_hosts.xml"
 echo "[+] Extracting CVEs from full scan..."
-echo "" > "$VULN_FILE"
 
 if command -v xmlstarlet > /dev/null; then
   xmlstarlet sel -t \
     -m "//host[ports/port/script[@id='vulners']]" \
-    -v "concat('[Host: ', address[@addrtype='ipv4']/@addr, ']')" -n \
+    -o "<host>" \
+    -e address -a addr -v "@addr" -a addrtype -v "@addrtype" -n -b \
     -m "ports/port[script[@id='vulners']]" \
-      -v "concat('  - Port ', @portid, '/', @protocol, ' - ', service/@name, ' ', service/@product, ' ', service/@version)" -n \
+      -o "<port>" \
+      -e portid -v "@portid" -b \
+      -e protocol -v "@protocol" -b \
+      -e service -v "concat(service/@name, ' ', service/@product, ' ', service/@version)" -b \
       -m "script[@id='vulners']/table[@key='cve']/table" \
-        -v "concat('    -> ', key[1])" -n \
-    "$OUTPUT_DIR/full_scan.xml" >> "$VULN_FILE"
+        -o "<cve>" -v "key[1]" -o "</cve>" \
+      -b -o "</port>" \
+    -b -o "</host>" \
+    "$OUTPUT_DIR/full_scan.xml" > "$VULN_XML"
 else
-  echo "[!] xmlstarlet is not installed. Skipping detailed CVE mapping."
+  echo "[!] xmlstarlet is not installed. Cannot extract CVE XML summary."
 fi
-
-# Flat CVE list
-grep '-> CVE-' "$VULN_FILE" | sed 's/.*-> //' | sort -u > "$SUMMARY_FILE"
 
 # Final message
 echo -e "\n=============================="
 echo "Scan complete. Results saved in: $OUTPUT_DIR"
-echo "Detailed vulnerabilities: $VULN_FILE"
-echo "Key CVEs listed in: $SUMMARY_FILE"
+echo "Live hosts: $LIVE_HOSTS_FILE"
+echo "Fast TCP ports: $OPEN_PORTS_FILE"
+echo "Full Scan: $OUTPUT_DIR/full_scan.txt + $OUTPUT_DIR/full_scan.xml"
+echo "ARP Scan: $OUTPUT_DIR/scan1_arp.txt"
+echo "IP Protocol Scan: $OUTPUT_DIR/scan1_ipproto.txt"
+echo "CVE Summary (XML): $VULN_XML"
 echo "=============================="
