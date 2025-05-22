@@ -20,7 +20,7 @@ OPEN_PORTS_FILE="$OUTPUT_DIR/open_ports.txt"
 
 # Step 1: Host Discovery (ICMP, ARP, IP Proto)
 echo "[+] Performing host discovery..."
-nmap -sn --script=icmp-echo,icmp-timestamp,icmp-address-mask $COMMON_OPTS -oX "$OUTPUT_DIR/ping_scan.xml" "$TARGET"
+nmap -sn -PE -PP -PM $COMMON_OPTS -oX "$OUTPUT_DIR/ping_scan.xml" "$TARGET"
 nmap -sn -PR $COMMON_OPTS -oX "$OUTPUT_DIR/arp_scan.xml" "$TARGET"
 nmap -sO -Pn $COMMON_OPTS -oX "$OUTPUT_DIR/ipproto_scan.xml" "$TARGET"
 
@@ -44,7 +44,7 @@ OPEN_PORTS=$(cat "$OPEN_PORTS_FILE")
 if [ -n "$OPEN_PORTS" ]; then
   echo "[+] Running detailed scans (TCP/UDP/SCTP), OS, DNS, traceroute, and CVEs..."
   nmap -sS -sU -sY -sV -sC -A -O \
-       --script vulners,dns-brute,dns-service-discovery,traceroute --traceroute \
+       --script vulners,dns-brute,dns-service-discovery --traceroute \
        -Pn $COMMON_OPTS -p "$OPEN_PORTS" -iL "$LIVE_HOSTS_FILE" -oX "$OUTPUT_DIR/full_scan.xml"
 else
   echo "[-] No open TCP ports found. Skipping detailed scan."
