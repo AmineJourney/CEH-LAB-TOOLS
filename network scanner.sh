@@ -18,11 +18,10 @@ COMMON_OPTS="-n -T3 -v"
 LIVE_HOSTS_FILE="$OUTPUT_DIR/live_hosts.txt"
 OPEN_PORTS_FILE="$OUTPUT_DIR/open_ports.txt"
 
-# Step 1: Host Discovery (ICMP, ARP, IP Proto)
-echo "[+] Performing host discovery..."
-nmap -sn -PE -PP -PM $COMMON_OPTS -oX "$OUTPUT_DIR/ping_scan.xml" "$TARGET"
+# Step 1: Host Discovery (ICMP, ARP, IP Proto, TCP/UDP/Other)
+echo "[+] Performing host discovery (ICMP, TCP, ARP, IP Protocol)..."
+nmap -sn -PE -PP -PM -PS22,80,443 -PA22,80,443 -PO1,6,17 $COMMON_OPTS -oX "$OUTPUT_DIR/ping_scan.xml" "$TARGET"
 nmap -sn -PR $COMMON_OPTS -oX "$OUTPUT_DIR/arp_scan.xml" "$TARGET"
-nmap -sn -PO $COMMON_OPTS -oX "$OUTPUT_DIR/ipproto_scan.xml" "$TARGET"
 nmap -sO -Pn $COMMON_OPTS -oX "$OUTPUT_DIR/ipproto_scan.xml" "$TARGET"
 
 # Merge live hosts from all scans
@@ -51,13 +50,31 @@ else
   echo "[-] No open TCP ports found. Skipping detailed scan."
 fi
 
-# Step 4: Extract CVE Summary (text format)
+# Step 4: Extract CVE Summary with host and port context
 SUMMARY_FILE="$OUTPUT_DIR/cve_summary.txt"
+VULN_FILE="$OUTPUT_DIR/host_vulnerabilities.txt"
 echo "[+] Extracting CVEs from full scan..."
-grep -A 5 'script id="vulners"' "$OUTPUT_DIR/full_scan.xml" | grep 'CVE-' | sed -n 's/.*\(CVE-[0-9\-]*\).*/\1/p' | sort -u > "$SUMMARY_FILE"
+echo "" > "$VULN_FILE"
+
+if command -v xmlstarlet > /dev/null; then
+  xmlstarlet sel -t \
+    -m "//host[ports/port/script[@id='vulners']]" \
+    -v "concat('[Host: ', address[@addrtype='ipv4']/@addr, ']')" -n \
+    -m "ports/port[script[@id='vulners']]" \
+      -v "concat('  - Port ', @portid, '/', @protocol, ' - ', service/@name, ' ', service/@product, ' ', service/@version)" -n \
+      -m "script[@id='vulners']/table[@key='cve']/table" \
+        -v "concat('    -> ', key[1])" -n \
+    "$OUTPUT_DIR/full_scan.xml" >> "$VULN_FILE"
+else
+  echo "[!] xmlstarlet is not installed. Skipping detailed CVE mapping."
+fi
+
+# Flat CVE list
+grep '-> CVE-' "$VULN_FILE" | sed 's/.*-> //' | sort -u > "$SUMMARY_FILE"
 
 # Final message
 echo -e "\n=============================="
 echo "Scan complete. Results saved in: $OUTPUT_DIR"
+echo "Detailed vulnerabilities: $VULN_FILE"
 echo "Key CVEs listed in: $SUMMARY_FILE"
 echo "=============================="
