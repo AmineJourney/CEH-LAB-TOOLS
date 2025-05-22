@@ -22,6 +22,7 @@ OPEN_PORTS_FILE="$OUTPUT_DIR/open_ports.txt"
 echo "[+] Performing host discovery..."
 nmap -sn -PE -PP -PM $COMMON_OPTS -oX "$OUTPUT_DIR/ping_scan.xml" "$TARGET"
 nmap -sn -PR $COMMON_OPTS -oX "$OUTPUT_DIR/arp_scan.xml" "$TARGET"
+nmap -sn -PO $COMMON_OPTS -oX "$OUTPUT_DIR/ipproto_scan.xml" "$TARGET"
 nmap -sO -Pn $COMMON_OPTS -oX "$OUTPUT_DIR/ipproto_scan.xml" "$TARGET"
 
 # Merge live hosts from all scans
