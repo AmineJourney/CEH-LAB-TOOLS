@@ -16,49 +16,58 @@ if [ -z "$TARGET" ]; then
 fi
 
 # Shared options
-COMMON_OPTS="-Pn -n -T3 -v"
+COMMON_OPTS="-n -T3 -v"
+
+# Step 0: ICMP-based Ping Scan (Echo, Timestamp, Address-mask)
+nmap -sn --script=icmp-echo,icmp-timestamp,icmp-address-mask $COMMON_OPTS -oA "$OUTPUT_DIR/icmp_ping" "$TARGET"
+
+# Step 0.1: ARP Scan (only for local network targets)
+nmap -sn -PR -oA "$OUTPUT_DIR/arp_scan" "$TARGET"
+
+# Step 0.2: IP Protocol Ping Scan
+nmap -sO -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/ip_proto_ping" "$TARGET"
 
 # Step 1: TCP Connect / Full Open
-nmap -sT $COMMON_OPTS -oA "$OUTPUT_DIR/tcp_connect" "$TARGET"
+nmap -sT -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/tcp_connect" "$TARGET"
 
 # Step 2: Stealth (Half-Open) Scan
-nmap -sS $COMMON_OPTS -oA "$OUTPUT_DIR/stealth_halfopen" "$TARGET"
+nmap -sS -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/stealth_halfopen" "$TARGET"
 
 # Step 3: UDP Scan
-nmap -sU $COMMON_OPTS -oA "$OUTPUT_DIR/udp" "$TARGET"
+nmap -sU -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/udp" "$TARGET"
 
 # Step 4: SCTP INIT Scan
-nmap -sY $COMMON_OPTS -oA "$OUTPUT_DIR/sctp_init" "$TARGET"
+nmap -sY -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/sctp_init" "$TARGET"
 
 # Step 5: SCTP COOKIE-ECHO Scan
-nmap -sZ $COMMON_OPTS -oA "$OUTPUT_DIR/sctp_cookie" "$TARGET"
+nmap -sZ -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/sctp_cookie" "$TARGET"
 
 # Step 6: Xmas Scan
-nmap -sX $COMMON_OPTS -oA "$OUTPUT_DIR/xmas" "$TARGET"
+nmap -sX -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/xmas" "$TARGET"
 
 # Step 7: FIN Scan
-nmap -sF $COMMON_OPTS -oA "$OUTPUT_DIR/fin" "$TARGET"
+nmap -sF -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/fin" "$TARGET"
 
 # Step 8: NULL Scan
-nmap -sN $COMMON_OPTS -oA "$OUTPUT_DIR/null" "$TARGET"
+nmap -sN -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/null" "$TARGET"
 
 # Step 9: Maimon Scan
-nmap -sM $COMMON_OPTS -oA "$OUTPUT_DIR/maimon" "$TARGET"
+nmap -sM -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/maimon" "$TARGET"
 
 # Step 10: Inverse TCP Flag Scans
-nmap -sF -sN -sX $COMMON_OPTS -oA "$OUTPUT_DIR/inverse_flags" "$TARGET"
+nmap -sF -sN -sX -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/inverse_flags" "$TARGET"
 
 # Step 11: ACK Flag Probe
-nmap -sA $COMMON_OPTS -oA "$OUTPUT_DIR/ack_probe" "$TARGET"
+nmap -sA -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/ack_probe" "$TARGET"
 
 # Step 12: TTL-based Scan
-nmap -sA --ttl 100 $COMMON_OPTS -oA "$OUTPUT_DIR/ttl_scan" "$TARGET"
+nmap -sA --ttl 100 -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/ttl_scan" "$TARGET"
 
 # Step 13: Window Scan
-nmap -sA -sW $COMMON_OPTS -oA "$OUTPUT_DIR/window_scan" "$TARGET"
+nmap -sA -sW -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/window_scan" "$TARGET"
 
 # Step 14: Version Detection + CVE Extraction
-nmap -sV --script vulners $COMMON_OPTS -oX "$OUTPUT_DIR/version_cves.xml" "$TARGET"
+nmap -sV --script vulners -Pn $COMMON_OPTS -oX "$OUTPUT_DIR/version_cves.xml" "$TARGET"
 
 # Optional: IDLE/IPID Scan (requires zombie IP)
 # ZOMBIE="<zombie_ip>"
