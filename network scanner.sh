@@ -22,7 +22,7 @@ OPEN_PORTS_FILE="$OUTPUT_DIR/open_ports.txt"
 # Step 1: Individual Host Discovery Scans
 
 # ICMP Echo
-nmap -sn -PE $COMMON_OPTS -oN "$OUTPUT_DIR/scan1_icmp_echo.txt" "$TARGET"
+nmap -sn -PE "$OUTPUT_DIR/scan1_icmp_echo.txt" "$TARGET"
 # ICMP Timestamp
 nmap -sn -PP $COMMON_OPTS -oN "$OUTPUT_DIR/scan1_icmp_timestamp.txt" "$TARGET"
 # ICMP Netmask Ping
