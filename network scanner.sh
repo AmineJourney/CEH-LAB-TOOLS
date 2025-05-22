@@ -17,23 +17,14 @@ fi
 
 COMMON_OPTS="-n -T3 -v"
 LIVE_HOSTS_FILE="$OUTPUT_DIR/hosts.txt"
-OPEN_PORTS_FILE="$OUTPUT_DIR/open_ports.txt"
 
 # Step 1: Individual Host Discovery Scans
-
-# ICMP Echo
 nmap -sn -PE "$OUTPUT_DIR/scan1_icmp_echo.txt" "$TARGET"
-# ICMP Timestamp
 nmap -sn -PP $COMMON_OPTS -oN "$OUTPUT_DIR/scan1_icmp_timestamp.txt" "$TARGET"
-# ICMP Netmask Ping
 nmap -sn -PM $COMMON_OPTS -oN "$OUTPUT_DIR/scan1_icmp_netmask.txt" "$TARGET"
-# TCP SYN Ping
 nmap -sn -PS22,80,443 $COMMON_OPTS -oN "$OUTPUT_DIR/scan1_tcp_syn.txt" "$TARGET"
-# TCP ACK Ping
 nmap -sn -PA22,80,443 $COMMON_OPTS -oN "$OUTPUT_DIR/scan1_tcp_ack.txt" "$TARGET"
-# IP Protocol Ping
 nmap -sn -PO1,6,17 $COMMON_OPTS -oN "$OUTPUT_DIR/scan1_ipproto.txt" "$TARGET"
-# ARP Ping Scan
 nmap -sn -PR $COMMON_OPTS -oN "$OUTPUT_DIR/scan1_arp.txt" "$TARGET"
 
 # Merge live hosts
@@ -41,11 +32,10 @@ grep -h "Nmap scan report for" "$OUTPUT_DIR"/scan1_*.txt | awk '{print $NF}' | g
 
 # Step 2: Fast TCP Scan per Host (Separate scans)
 if [ -s "$LIVE_HOSTS_FILE" ]; then
-  > "$OPEN_PORTS_FILE"
   while read -r host; do
     nmap -sS -F -Pn $COMMON_OPTS -oN "$OUTPUT_DIR/scan2_syn_$host.txt" "$host"
     nmap -sT -F -Pn $COMMON_OPTS -oN "$OUTPUT_DIR/scan2_connect_$host.txt" "$host"
-    grep -Eo '([0-9]{1,5})/tcp\s+open' "$OUTPUT_DIR/scan2_syn_$host.txt" "$OUTPUT_DIR/scan2_connect_$host.txt" | cut -d/ -f1 | sort -u | paste -sd, - >> "$OPEN_PORTS_FILE"
+    grep -Eo '([0-9]{1,5})/tcp\s+open' "$OUTPUT_DIR/scan2_syn_$host.txt" "$OUTPUT_DIR/scan2_connect_$host.txt" | cut -d/ -f1 | sort -u | paste -sd, - - > "$OUTPUT_DIR/open_ports_$host.txt"
   done < "$LIVE_HOSTS_FILE"
 else
   echo "[-] No live hosts discovered. Exiting."
@@ -53,30 +43,29 @@ else
 fi
 
 # Step 3: Full Detailed Scans per Host (Split per feature)
-if [ -s "$OPEN_PORTS_FILE" ]; then
-  while read -r host; do
-    PORTS=$(grep -h "" "$OPEN_PORTS_FILE" | tr ',' '\n' | sort -u | paste -sd, -)
-    if [ -n "$PORTS" ]; then
-      nmap -sS -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_syn_$host.txt" "$host"
-      nmap -sU -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_udp_$host.txt" "$host"
-      nmap -sY -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_sctp_$host.txt" "$host"
-      nmap -sV -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_version_$host.txt" "$host"
-      nmap -sC -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_script_$host.txt" "$host"
-      nmap -A  -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_aggressive_$host.txt" "$host"
-      nmap -O  -Pn $COMMON_OPTS         -oN "$OUTPUT_DIR/scan3_osdetect_$host.txt" "$host"
-      for script in vulners dns-brute dns-service-discovery smb-os-discovery smb-enum-shares smb-enum-users; do
-        nmap --script "$script" -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_nse_${script}_$host.txt" "$host"
-      done
-      nmap --traceroute -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_trace_$host.txt" "$host"
-    fi
-  done < "$LIVE_HOSTS_FILE"
-fi
+while read -r host; do
+  PORTS=$(cat "$OUTPUT_DIR/open_ports_$host.txt")
+  if [ -n "$PORTS" ]; then
+    nmap -sS -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_syn_$host.txt" "$host"
+    nmap -sU -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_udp_$host.txt" "$host"
+    nmap -sY -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_sctp_$host.txt" "$host"
+    nmap -sV -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_version_$host.txt" "$host"
+    nmap -sC -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_script_basic_$host.txt" "$host"
+    nmap -A  -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_aggressive_$host.txt" "$host"
+    nmap -O  -Pn $COMMON_OPTS         -oN "$OUTPUT_DIR/scan3_osdetect_$host.txt" "$host"
+    for script in vulners dns-brute dns-service-discovery smb-os-discovery smb-enum-shares smb-enum-users; do
+      nmap --script "$script" -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_nse_${script}_$host.txt" "$host"
+    done
+    nmap --traceroute -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_trace_$host.txt" "$host"
+  fi
+done < "$LIVE_HOSTS_FILE"
 
 # Step 4: Extract CVEs from all XMLs
 VULN_XML="$OUTPUT_DIR/cve_hosts.xml"
 echo "<vulnerabilities>" > "$VULN_XML"
 if command -v xmlstarlet > /dev/null; then
   for xml in "$OUTPUT_DIR"/scan3_nse_*.xml; do
+    [ -f "$xml" ] || continue
     xmlstarlet sel -t \
       -m "//host[ports/port/script[@id='vulners']]" \
       -o "<host>" \
@@ -99,7 +88,7 @@ echo "</vulnerabilities>" >> "$VULN_XML"
 echo -e "\n=============================="
 echo "Scan complete. Results saved in: $OUTPUT_DIR"
 echo "Live hosts: $LIVE_HOSTS_FILE"
-echo "Open ports: $OPEN_PORTS_FILE"
+echo "Open ports: Individual files: open_ports_<host>.txt"
 echo "Full scan outputs per type in: scan3_*_host.txt"
 echo "CVE summary (XML): $VULN_XML"
 echo "=============================="
