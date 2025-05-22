@@ -1,9 +1,8 @@
 #!/bin/bash
 
-# ==============================
-# Full Nmap Multi-Technique Scanner
-# Plus JSON summary with versions and CVE matching
-# ==============================
+# ====================================
+# Adaptive Nmap Scanner with Full Recon, JSON Outputs, UDP, SCTP, and CVE Matching
+# ====================================
 
 TARGET="$1"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
@@ -11,75 +10,91 @@ OUTPUT_DIR="nmap_scan_$TARGET_$TIMESTAMP"
 mkdir -p "$OUTPUT_DIR"
 
 if [ -z "$TARGET" ]; then
-  echo "Usage: $0 <target IP/domain>"
+  echo "Usage: $0 <target IP/domain or range>"
   exit 1
 fi
 
-# Shared options
 COMMON_OPTS="-n -T3 -v"
+LIVE_HOSTS_FILE="$OUTPUT_DIR/live_hosts.txt"
+OPEN_PORTS_FILE="$OUTPUT_DIR/open_ports.txt"
 
-# Step 0: ICMP-based Ping Scan (Echo, Timestamp, Address-mask)
-nmap -sn --script=icmp-echo,icmp-timestamp,icmp-address-mask $COMMON_OPTS -oA "$OUTPUT_DIR/icmp_ping" "$TARGET"
+# Step 1: Host Discovery (ICMP, ARP, IP Proto)
+echo "[+] Performing host discovery..."
+nmap -sn --script=icmp-echo,icmp-timestamp,icmp-address-mask $COMMON_OPTS -oX "$OUTPUT_DIR/ping_scan.xml" "$TARGET"
+nmap -sn -PR $COMMON_OPTS -oX "$OUTPUT_DIR/arp_scan.xml" "$TARGET"
+nmap -sO -Pn $COMMON_OPTS -oX "$OUTPUT_DIR/ipproto_scan.xml" "$TARGET"
 
-# Step 0.1: ARP Scan (only for local network targets)
-nmap -sn -PR -oA "$OUTPUT_DIR/arp_scan" "$TARGET"
+# Merge live hosts from all scans
+python3 - <<EOF
+import xml.etree.ElementTree as ET
+import os
+hosts = set()
+for file in ["ping_scan.xml", "arp_scan.xml", "ipproto_scan.xml"]:
+    path = os.path.join("$OUTPUT_DIR", file)
+    if os.path.exists(path):
+        root = ET.parse(path).getroot()
+        for host in root.findall("host"):
+            if host.find("status").get("state") == "up":
+                ip = host.find("address").get("addr")
+                hosts.add(ip)
+with open("$LIVE_HOSTS_FILE", "w") as f:
+    f.write("\n".join(sorted(hosts)))
+EOF
 
-# Step 0.2: IP Protocol Ping Scan
-nmap -sO -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/ip_proto_ping" "$TARGET"
+# Step 2: Fast Port Scan (TCP)
+echo "[+] Scanning live hosts for open TCP ports..."
+nmap -sS -F -Pn $COMMON_OPTS -iL "$LIVE_HOSTS_FILE" -oX "$OUTPUT_DIR/fast_tcp_scan.xml"
 
-# Step 1: TCP Connect / Full Open
-nmap -sT -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/tcp_connect" "$TARGET"
+# Extract open TCP ports
+python3 - <<EOF
+import xml.etree.ElementTree as ET
+root = ET.parse("$OUTPUT_DIR/fast_tcp_scan.xml").getroot()
+ports = set()
+for host in root.findall("host"):
+    for port in host.findall("ports/port"):
+        if port.find("state").get("state") == "open":
+            ports.add(port.get("portid"))
+with open("$OPEN_PORTS_FILE", "w") as f:
+    f.write(",".join(sorted(ports)))
+EOF
 
-# Step 2: Stealth (Half-Open) Scan
-nmap -sS -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/stealth_halfopen" "$TARGET"
+OPEN_PORTS=$(cat "$OPEN_PORTS_FILE")
 
-# Step 3: UDP Scan
-nmap -sU -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/udp" "$TARGET"
+# Step 3: Full TCP/UDP/SCTP Scan + DNS + OS + CVEs
+if [ -n "$OPEN_PORTS" ]; then
+  echo "[+] Running detailed scans (TCP/UDP/SCTP), OS, DNS, traceroute, and CVEs..."
+  nmap -sS -sU -sY -sV -sC -A -O --script vulners,dns-brute,dns-service-discovery,traceroute --traceroute \
+       -Pn $COMMON_OPTS -p "$OPEN_PORTS" -iL "$LIVE_HOSTS_FILE" -oX "$OUTPUT_DIR/full_scan.xml"
+else
+  echo "[-] No open TCP ports found. Skipping detailed scan."
+fi
 
-# Step 4: SCTP INIT Scan
-nmap -sY -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/sctp_init" "$TARGET"
+# Step 4: JSON Conversion for each scan
+for xml in ping_scan.xml arp_scan.xml ipproto_scan.xml fast_tcp_scan.xml full_scan.xml; do
+  if [ -f "$OUTPUT_DIR/$xml" ]; then
+    echo "[+] Converting $xml to JSON..."
+    python3 -c "
+import xmltodict, json
+with open('$OUTPUT_DIR/$xml') as f:
+    j = xmltodict.parse(f.read())
+with open('$OUTPUT_DIR/${xml%.xml}.json', 'w') as out:
+    json.dump(j, out, indent=2)
+" || echo "[!] Failed to convert $xml"
+  fi
+done
 
-# Step 5: SCTP COOKIE-ECHO Scan
-nmap -sZ -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/sctp_cookie" "$TARGET"
-
-# Step 6: Xmas Scan
-nmap -sX -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/xmas" "$TARGET"
-
-# Step 7: FIN Scan
-nmap -sF -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/fin" "$TARGET"
-
-# Step 8: NULL Scan
-nmap -sN -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/null" "$TARGET"
-
-# Step 9: Maimon Scan
-nmap -sM -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/maimon" "$TARGET"
-
-# Step 10: Inverse TCP Flag Scans
-nmap -sF -sN -sX -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/inverse_flags" "$TARGET"
-
-# Step 11: ACK Flag Probe
-nmap -sA -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/ack_probe" "$TARGET"
-
-# Step 12: TTL-based Scan
-nmap -sA --ttl 100 -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/ttl_scan" "$TARGET"
-
-# Step 13: Window Scan
-nmap -sA -sW -Pn $COMMON_OPTS -oA "$OUTPUT_DIR/window_scan" "$TARGET"
-
-# Step 14: Version Detection + CVE Extraction
-nmap -sV --script vulners -Pn $COMMON_OPTS -oX "$OUTPUT_DIR/version_cves.xml" "$TARGET"
-
-# Optional: IDLE/IPID Scan (requires zombie IP)
-# ZOMBIE="<zombie_ip>"
-# nmap -Pn -p- -sI "$ZOMBIE" $COMMON_OPTS -oA "$OUTPUT_DIR/idle_ipid" "$TARGET"
-
-# Step 15: Generate JSON Summary
+# Step 5: Extract CVE Summary JSON
 SUMMARY_FILE="$OUTPUT_DIR/summary.json"
 python3 - <<EOF
 import xml.etree.ElementTree as ET
 import json
+import os
 
-xml_path = "$OUTPUT_DIR/version_cves.xml"
+xml_path = "$OUTPUT_DIR/full_scan.xml"
+if not os.path.exists(xml_path):
+    print("No full scan results to summarize.")
+    exit(0)
+
 tree = ET.parse(xml_path)
 root = tree.getroot()
 summaries = []
