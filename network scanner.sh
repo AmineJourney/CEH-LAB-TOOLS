@@ -15,6 +15,14 @@ if [ -z "$TARGET" ]; then
   exit 1
 fi
 
+VERBOSE=0  # Set to 1 to enable verbose logging
+
+log_verbose() {
+  if [ "$VERBOSE" -eq 1 ]; then
+    echo "$1"
+  fi
+}
+
 COMMON_OPTS="-n -T3 -v"
 COMMON_OPTECHO="-T3 -v"
 LIVE_HOSTS_FILE="$OUTPUT_DIR/hosts.txt"
@@ -30,7 +38,7 @@ track_scan_status() {
 
 increment_scan_count() {
   ((SCAN_COUNTER++))
-  echo "[+] Completed Scans: $SCAN_COUNTER"
+  log_verbose "[+] Completed Scans: $SCAN_COUNTER"
 }
 
 # Step 1: Individual Host Discovery Scans
@@ -85,8 +93,17 @@ if [ -s "$LIVE_HOSTS_FILE" ]; then
       track_scan_status "scan2_connect_$host" "done"
     } || track_scan_status "scan2_connect_$host" "errored"
 
-    grep -Eo '([0-9]{1,5})/tcp\s+open' "$OUTPUT_DIR/scan2_"*"_$host.txt" | cut -d/ -f1 | sort -u | paste -sd, - - > "$OUTPUT_DIR/open_ports_tcp_$host.txt"
-    touch "$OUTPUT_DIR/open_ports_udp_$host.txt"
+    TCP_PORTS=$(grep -Eh '^[0-9]+/tcp\s+open' "$OUTPUT_DIR/scan2_syn_$host.txt" "$OUTPUT_DIR/scan2_connect_$host.txt" | cut -d/ -f1 | sort -nu | paste -sd, -)
+    if [ -n "$TCP_PORTS" ]; then
+      echo "$TCP_PORTS" > "$OUTPUT_DIR/open_ports_tcp_$host.txt"
+      log_verbose "[+] TCP ports found for $host: $TCP_PORTS"
+    else
+      log_verbose "[-] No TCP ports found for $host. Skipping port file creation."
+      rm -f "$OUTPUT_DIR/open_ports_tcp_$host.txt"
+    fi
+
+    UDP_PORTS=""
+    # Add UDP port extraction logic here later if needed
   done < "$LIVE_HOSTS_FILE"
 else
   echo "[-] No live hosts discovered."
@@ -95,8 +112,11 @@ fi
 
 # Step 3: Full Detailed Scans Using Extracted Ports
 while read -r host; do
-  TCP_PORTS=$(cat "$OUTPUT_DIR/open_ports_tcp_$host.txt")
-  UDP_PORTS=$(cat "$OUTPUT_DIR/open_ports_udp_$host.txt")
+  TCP_PORTS_FILE="$OUTPUT_DIR/open_ports_tcp_$host.txt"
+  UDP_PORTS_FILE="$OUTPUT_DIR/open_ports_udp_$host.txt"
+
+  [ -f "$TCP_PORTS_FILE" ] && TCP_PORTS=$(tr -d ' \n\r' < "$TCP_PORTS_FILE") || TCP_PORTS=""
+  [ -f "$UDP_PORTS_FILE" ] && UDP_PORTS=$(tr -d ' \n\r' < "$UDP_PORTS_FILE") || UDP_PORTS=""
 
   if [ -z "$TCP_PORTS" ]; then
     track_scan_status "scan3_tcp_$host" "skipped"
@@ -142,16 +162,24 @@ while read -r host; do
   } || track_scan_status "scan3_osdetect_$host" "errored"
 
   for script in vulners dns-brute dns-service-discovery smb-os-discovery smb-enum-shares smb-enum-users; do
-    nmap --script "$script" -Pn $COMMON_OPTS -p "$TCP_PORTS" -oN "$OUTPUT_DIR/scan3_nse_${script}_$host.txt" "$host" && {
-      increment_scan_count
-      track_scan_status "scan3_nse_${script}_$host" "done"
-    } || track_scan_status "scan3_nse_${script}_$host" "errored"
+    if [ -n "$TCP_PORTS" ]; then
+      nmap --script "$script" -Pn $COMMON_OPTS -p "$TCP_PORTS" -oN "$OUTPUT_DIR/scan3_nse_${script}_$host.txt" "$host" && {
+        increment_scan_count
+        track_scan_status "scan3_nse_${script}_$host" "done"
+      } || track_scan_status "scan3_nse_${script}_$host" "errored"
+    else
+      track_scan_status "scan3_nse_${script}_$host" "skipped"
+    fi
   done
 
-  nmap --traceroute -Pn $COMMON_OPTS -p "$TCP_PORTS" -oN "$OUTPUT_DIR/scan3_trace_$host.txt" "$host" && {
-    increment_scan_count
-    track_scan_status "scan3_trace_$host" "done"
-  } || track_scan_status "scan3_trace_$host" "errored"
+  if [ -n "$TCP_PORTS" ]; then
+    nmap --traceroute -Pn $COMMON_OPTS -p "$TCP_PORTS" -oN "$OUTPUT_DIR/scan3_trace_$host.txt" "$host" && {
+      increment_scan_count
+      track_scan_status "scan3_trace_$host" "done"
+    } || track_scan_status "scan3_trace_$host" "errored"
+  else
+    track_scan_status "scan3_trace_$host" "skipped"
+  fi
 
 done < "$LIVE_HOSTS_FILE"
 
@@ -173,7 +201,7 @@ fi
 echo "</vulnerabilities>" >> "$VULN_XML"
 
 # Final Summary
-echo -e "\n=============================="
+log_verbose "\n=============================="
 echo "Scan complete. Results saved in: $OUTPUT_DIR"
 echo "Live hosts: $LIVE_HOSTS_FILE"
 echo "Open ports per host in: open_ports_<host>.txt"
@@ -183,4 +211,4 @@ echo "CVE summary (XML): $VULN_XML"
 echo "Total scans executed: $SCAN_COUNTER"
 echo -e "\n========= Scan Status Summary ========="
 grep -E 'done|errored|skipped' "$SCAN_TRACKER_FILE" | sort
-echo "=============================="
+log_verbose "=============================="
