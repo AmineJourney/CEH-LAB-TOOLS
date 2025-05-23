@@ -108,61 +108,63 @@ grep -h "Nmap scan report for" "$OUTPUT_DIR"/scan1_*.txt | awk '{print $NF}' | g
 if [ -s "$LIVE_HOSTS_FILE" ]; then
   while read -r host; do
     safe_host=$(sanitize_filename "$host")
+    host_dir="$OUTPUT_DIR/$safe_host"
+    mkdir -p "$host_dir"
 
-    nmap -sS -F -Pn $COMMON_OPTS -oN "$OUTPUT_DIR/scan2_syn_${safe_host}.txt" "$host" && {
+    nmap -sS -F -Pn $COMMON_OPTS -oN "$host_dir/scan2_syn.txt" "$host" && {
       increment_scan_count
       track_scan_status "scan2_syn_${safe_host}" "done"
     } || track_scan_status "scan2_syn_${safe_host}" "errored"
 
-    nmap -sT -F -Pn $COMMON_OPTS -oN "$OUTPUT_DIR/scan2_connect_${safe_host}.txt" "$host" && {
+    nmap -sT -F -Pn $COMMON_OPTS -oN "$host_dir/scan2_connect.txt" "$host" && {
       increment_scan_count
       track_scan_status "scan2_connect_${safe_host}" "done"
     } || track_scan_status "scan2_connect_${safe_host}" "errored"
 
-    nmap -sU --top-ports 100 -Pn $COMMON_OPTS -oN "$OUTPUT_DIR/scan2_udp_${safe_host}.txt" "$host" && {
+    nmap -sU --top-ports 100 -Pn $COMMON_OPTS -oN "$host_dir/scan2_udp.txt" "$host" && {
       increment_scan_count
       track_scan_status "scan2_udp_${safe_host}" "done"
     } || track_scan_status "scan2_udp_${safe_host}" "errored"
 
-    TCP_PORTS=$(grep -Eh '^[0-9]+/tcp\s+open' "$OUTPUT_DIR/scan2_syn_${safe_host}.txt" "$OUTPUT_DIR/scan2_connect_${safe_host}.txt" 2>/dev/null | cut -d/ -f1 | sort -nu | paste -sd, -)
+    TCP_PORTS=$(grep -Eh '^[0-9]+/tcp\s+open' "$host_dir/scan2_syn.txt" "$host_dir/scan2_connect.txt" 2>/dev/null | cut -d/ -f1 | sort -nu | paste -sd, -)
     if [ -n "$TCP_PORTS" ]; then
-      echo "$TCP_PORTS" > "$OUTPUT_DIR/open_ports_tcp_${safe_host}.txt"
+      echo "$TCP_PORTS" > "$host_dir/open_ports_tcp.txt"
       log_success "TCP ports for $host: $TCP_PORTS"
     else
-      rm -f "$OUTPUT_DIR/open_ports_tcp_${safe_host}.txt"
+      rm -f "$host_dir/open_ports_tcp.txt"
     fi
 
-    UDP_PORTS=$(grep -Eh '^[0-9]+/udp\s+open' "$OUTPUT_DIR/scan2_udp_${safe_host}.txt" 2>/dev/null | cut -d/ -f1 | sort -nu | paste -sd, -)
+    UDP_PORTS=$(grep -Eh '^[0-9]+/udp\s+open' "$host_dir/scan2_udp.txt" 2>/dev/null | cut -d/ -f1 | sort -nu | paste -sd, -)
     if [ -n "$UDP_PORTS" ]; then
-      echo "$UDP_PORTS" > "$OUTPUT_DIR/open_ports_udp_${safe_host}.txt"
+      echo "$UDP_PORTS" > "$host_dir/open_ports_udp.txt"
       log_success "UDP ports for $host: $UDP_PORTS"
     else
-      rm -f "$OUTPUT_DIR/open_ports_udp_${safe_host}.txt"
+      rm -f "$host_dir/open_ports_udp.txt"
     fi
 
-    if [ -f "$OUTPUT_DIR/open_ports_tcp_${safe_host}.txt" ]; then
-      PORTS=$(cat "$OUTPUT_DIR/open_ports_tcp_${safe_host}.txt")
-      nmap -sS -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_syn_${safe_host}.txt" "$host" && track_scan_status "scan3_syn_${safe_host}" "done" || track_scan_status "scan3_syn_${safe_host}" "errored"
-      nmap -sV -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_version_${safe_host}.txt" "$host" && track_scan_status "scan3_version_${safe_host}" "done" || track_scan_status "scan3_version_${safe_host}" "errored"
-      nmap -sC -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_script_basic_${safe_host}.txt" "$host" && track_scan_status "scan3_script_basic_${safe_host}" "done" || track_scan_status "scan3_script_basic_${safe_host}" "errored"
-      nmap -A -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_aggressive_${safe_host}.txt" "$host" && track_scan_status "scan3_aggressive_${safe_host}" "done" || track_scan_status "scan3_aggressive_${safe_host}" "errored"
+    if [ -f "$host_dir/open_ports_tcp.txt" ]; then
+      PORTS=$(cat "$host_dir/open_ports_tcp.txt")
+      nmap -sS -Pn $COMMON_OPTS -p "$PORTS" -oN "$host_dir/scan3_syn.txt" "$host" && track_scan_status "scan3_syn_${safe_host}" "done" || track_scan_status "scan3_syn_${safe_host}" "errored"
+      nmap -sV -Pn $COMMON_OPTS -p "$PORTS" -oN "$host_dir/scan3_version.txt" "$host" && track_scan_status "scan3_version_${safe_host}" "done" || track_scan_status "scan3_version_${safe_host}" "errored"
+      nmap -sC -Pn $COMMON_OPTS -p "$PORTS" -oN "$host_dir/scan3_script_basic.txt" "$host" && track_scan_status "scan3_script_basic_${safe_host}" "done" || track_scan_status "scan3_script_basic_${safe_host}" "errored"
+      nmap -A -Pn $COMMON_OPTS -p "$PORTS" -oN "$host_dir/scan3_aggressive.txt" "$host" && track_scan_status "scan3_aggressive_${safe_host}" "done" || track_scan_status "scan3_aggressive_${safe_host}" "errored"
     fi
 
-    if [ -f "$OUTPUT_DIR/open_ports_udp_${safe_host}.txt" ]; then
-      PORTS=$(cat "$OUTPUT_DIR/open_ports_udp_${safe_host}.txt")
-      nmap -sU -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_udp_${safe_host}.txt" "$host" && track_scan_status "scan3_udp_${safe_host}" "done" || track_scan_status "scan3_udp_${safe_host}" "errored"
+    if [ -f "$host_dir/open_ports_udp.txt" ]; then
+      PORTS=$(cat "$host_dir/open_ports_udp.txt")
+      nmap -sU -Pn $COMMON_OPTS -p "$PORTS" -oN "$host_dir/scan3_udp.txt" "$host" && track_scan_status "scan3_udp_${safe_host}" "done" || track_scan_status "scan3_udp_${safe_host}" "errored"
     fi
 
-    nmap -O -Pn $COMMON_OPTS -oN "$OUTPUT_DIR/scan3_osdetect_${safe_host}.txt" "$host" && track_scan_status "scan3_osdetect_${safe_host}" "done" || track_scan_status "scan3_osdetect_${safe_host}" "errored"
+    nmap -O -Pn $COMMON_OPTS -oN "$host_dir/scan3_osdetect.txt" "$host" && track_scan_status "scan3_osdetect_${safe_host}" "done" || track_scan_status "scan3_osdetect_${safe_host}" "errored"
 
     for script in vulners dns-brute dns-service-discovery smb-os-discovery smb-enum-shares smb-enum-users; do
-      if [ -f "$OUTPUT_DIR/open_ports_tcp_${safe_host}.txt" ]; then
-        PORTS=$(cat "$OUTPUT_DIR/open_ports_tcp_${safe_host}.txt")
-        nmap --script "$script" -Pn $COMMON_OPTS -p "$PORTS" -oN "$OUTPUT_DIR/scan3_nse_${script}_${safe_host}.txt" "$host" && track_scan_status "scan3_nse_${script}_${safe_host}" "done" || track_scan_status "scan3_nse_${script}_${safe_host}" "errored"
+      if [ -f "$host_dir/open_ports_tcp.txt" ]; then
+        PORTS=$(cat "$host_dir/open_ports_tcp.txt")
+        nmap --script "$script" -Pn $COMMON_OPTS -p "$PORTS" -oN "$host_dir/scan3_nse_${script}.txt" "$host" && track_scan_status "scan3_nse_${script}_${safe_host}" "done" || track_scan_status "scan3_nse_${script}_${safe_host}" "errored"
       fi
     done
 
-    nmap --traceroute -Pn $COMMON_OPTS -oN "$OUTPUT_DIR/scan3_trace_${safe_host}.txt" "$host" && track_scan_status "scan3_trace_${safe_host}" "done" || track_scan_status "scan3_trace_${safe_host}" "errored"
+    nmap --traceroute -Pn $COMMON_OPTS -oN "$host_dir/scan3_trace.txt" "$host" && track_scan_status "scan3_trace_${safe_host}" "done" || track_scan_status "scan3_trace_${safe_host}" "errored"
   done < "$LIVE_HOSTS_FILE"
 else
   log_error "No live hosts discovered."
@@ -173,8 +175,8 @@ fi
 VULN_XML="$OUTPUT_DIR/cve_hosts.xml"
 echo "<vulnerabilities>" > "$VULN_XML"
 if command -v xmlstarlet > /dev/null; then
-  for nse_txt in "$OUTPUT_DIR"/scan3_nse_vulners_*.txt; do
-    host=$(echo "$nse_txt" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+  for nse_txt in "$OUTPUT_DIR"/*/scan3_nse_vulners.txt; do
+    host=$(basename "$(dirname "$nse_txt")")
     if grep -q "CVE" "$nse_txt"; then
       echo "  <host ip=\"$host\">" >> "$VULN_XML"
       grep -oE "CVE-[0-9]{4}-[0-9]{4,}" "$nse_txt" | sort -u | while read -r cve; do
